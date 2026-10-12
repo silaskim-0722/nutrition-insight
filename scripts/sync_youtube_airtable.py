@@ -45,6 +45,43 @@ def feed(cid):
                        "url": "https://www.youtube.com/watch?v=" + vid})
     return videos
 
+
+def uploads_via_api(cid):
+    """Use the complete uploads playlist when a YouTube Data API key is configured."""
+    key = os.getenv("YOUTUBE_API_KEY", "").strip()
+    if not key:
+        return []
+    playlist = "UU" + cid[2:]
+    videos, token = [], ""
+    while True:
+        params = {"part": "snippet", "playlistId": playlist, "maxResults": 50, "key": key}
+        if token: params["pageToken"] = token
+        data = json.loads(request("https://www.googleapis.com/youtube/v3/playlistItems?" +
+                                  urllib.parse.urlencode(params)))
+        for item in data.get("items", []):
+            sn = item.get("snippet", {})
+            vid = sn.get("resourceId", {}).get("videoId")
+            if vid and sn.get("title") not in ("Private video", "Deleted video"):
+                videos.append({"id": vid, "title": sn.get("title", ""),
+                               "published": sn.get("publishedAt", ""),
+                               "url": "https://www.youtube.com/watch?v=" + vid})
+        token = data.get("nextPageToken", "")
+        if not token: break
+    return videos
+
+def known_video(cid):
+    """One-time recovery for the user-supplied video missing from the 15-entry RSS feed."""
+    vid = "tRNVu1W-IRs"
+    url = "https://www.youtube.com/watch?v=" + vid
+    info = json.loads(request("https://www.youtube.com/oembed?" +
+                              urllib.parse.urlencode({"url": url, "format": "json"})))
+    author = info.get("author_url", "")
+    if not author or not (author.rstrip("/").endswith("/@" + HANDLE) or
+                          author.rstrip("/").endswith("/channel/" + cid)):
+        print("Skipping recovery video: channel ownership could not be verified")
+        return None
+    return {"id": vid, "title": info.get("title", ""), "published": "", "url": url}
+
 def airtable_url(params=None):
     u = "https://api.airtable.com/v0/" + BASE + "/" + TABLE
     return u + ("?" + urllib.parse.urlencode(params) if params else "")
@@ -59,6 +96,17 @@ def main():
     cid = channel_id()
     videos = feed(cid)
     print("Channel:", cid, "Feed videos:", len(videos))
+    api_videos = uploads_via_api(cid)
+    if api_videos: print("Uploads playlist videos:", len(api_videos))
+    by_id = {v["id"]: v for v in videos}
+    by_id.update({v["id"]: v for v in api_videos})
+    if "tRNVu1W-IRs" not in by_id:
+        try:
+            recovered = known_video(cid)
+            if recovered: by_id[recovered["id"]] = recovered
+        except Exception as exc:
+            print("Recovery lookup unavailable:", exc)
+    videos = list(by_id.values())
     if not videos: raise RuntimeError("YouTube feed returned no videos")
     added = 0
     for video in reversed(videos):
@@ -67,7 +115,7 @@ def main():
             continue
         fields = {"title": video["title"], "url": video["url"],
                   "썸네일": "https://i.ytimg.com/vi/" + video["id"] + "/hqdefault.jpg",
-                  "업로드일": video["published"]}
+                  **({"업로드일": video["published"]} if video["published"] else {})}
         result = json.loads(request(airtable_url(), "POST", {"fields": fields}, auth=True))
         print("Created:", video["id"], result.get("id"))
         added += 1
