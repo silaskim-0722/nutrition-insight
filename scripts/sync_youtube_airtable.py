@@ -144,9 +144,13 @@ def enrich(video):
 
 def main():
     global channel_id_cache
-    cid = channel_id()
+    cid = os.getenv("YOUTUBE_CHANNEL_ID", "UCJ1SYnWqyBpnVT41ubFKN7Q")
     channel_id_cache = cid
-    videos = feed(cid)
+    try:
+        videos = feed(cid)
+    except Exception as exc:
+        print("YouTube RSS unavailable:", type(exc).__name__, str(exc))
+        videos = []
     print("Channel:", cid, "Feed videos:", len(videos))
     api_videos = uploads_via_api(cid)
     if api_videos: print("Uploads playlist videos:", len(api_videos))
@@ -159,7 +163,7 @@ def main():
         except Exception as exc:
             print("Recovery lookup unavailable:", exc)
     videos = list(by_id.values())
-    if not videos: raise RuntimeError("YouTube feed returned no videos")
+    if not videos: raise RuntimeError("No videos available from RSS or uploads API")
     added, updated = 0, 0
     for video in reversed(videos):
         formula = "FIND('" + video["id"] + "', {url}) > 0"
