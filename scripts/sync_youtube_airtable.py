@@ -110,14 +110,14 @@ def enrich(video):
         desc = info.get("description") or ""
         if desc: fields["설명"] = desc[:95000]
         tags = info.get("tags") or []
-        hashes = re.findall(r"(?<!\\w)#[\\w가-힣]+", desc)
+        hashes = re.findall(r"(?<!\w)#[\w가-힣]+", desc)
         if tags or hashes: fields["hashtags"] = ", ".join(dict.fromkeys(hashes + tags))[:95000]
         visibility = info.get("availability")
         if visibility in ("public", "unlisted", "private"):
             fields["privacyStatus"] = visibility
         if not video.get("published") and info.get("upload_date"):
             d = info["upload_date"]
-            if re.fullmatch(r"\\d{8}", d):
+            if re.fullmatch(r"\d{8}", d):
                 fields["업로드일"] = d[:4] + "-" + d[4:6] + "-" + d[6:] + "T00:00:00.000Z"
         captions = info.get("subtitles") or {}
         auto = info.get("automatic_captions") or {}
@@ -132,7 +132,7 @@ def enrich(video):
                     for event in payload.get("events", []):
                         line = "".join(seg.get("utf8", "") for seg in event.get("segs", []))
                         if line.strip(): parts.append(line.strip())
-                    transcript = "\\n".join(parts).strip()
+                    transcript = "\n".join(parts).strip()
                     if transcript:
                         fields["transcript"] = transcript[:95000]
                         return fields
