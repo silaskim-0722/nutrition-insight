@@ -92,8 +92,60 @@ def existing(video_id):
     data = json.loads(request(airtable_url({"filterByFormula": formula, "maxRecords": 1}), auth=True))
     return bool(data.get("records"))
 
+
+def enrich(video):
+    """Best-effort public metadata and captions; never overwrite existing data."""
+    fields = {}
+    try:
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+                "extract_flat": False, "ignoreerrors": False,
+                "socket_timeout": 15, "retries": 1}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(video["url"], download=False)
+        if not info: return fields
+        if info.get("channel_id") and info["channel_id"] != channel_id_cache:
+            print("Skip metadata: channel mismatch", video["id"])
+            return fields
+        desc = info.get("description") or ""
+        if desc: fields["설명"] = desc[:95000]
+        tags = info.get("tags") or []
+        hashes = re.findall(r"(?<!\\w)#[\\w가-힣]+", desc)
+        if tags or hashes: fields["hashtags"] = ", ".join(dict.fromkeys(hashes + tags))[:95000]
+        visibility = info.get("availability")
+        if visibility in ("public", "unlisted", "private"):
+            fields["privacyStatus"] = visibility
+        if not video.get("published") and info.get("upload_date"):
+            d = info["upload_date"]
+            if re.fullmatch(r"\\d{8}", d):
+                fields["업로드일"] = d[:4] + "-" + d[4:6] + "-" + d[6:] + "T00:00:00.000Z"
+        captions = info.get("subtitles") or {}
+        auto = info.get("automatic_captions") or {}
+        for sources in (captions, auto):
+            for lang in ("ko", "ko-KR", "en"):
+                tracks = sources.get(lang) or []
+                track = next((x for x in tracks if x.get("ext") == "json3" and x.get("url")), None)
+                if not track: continue
+                try:
+                    payload = json.loads(request(track["url"]))
+                    parts = []
+                    for event in payload.get("events", []):
+                        line = "".join(seg.get("utf8", "") for seg in event.get("segs", []))
+                        if line.strip(): parts.append(line.strip())
+                    transcript = "\\n".join(parts).strip()
+                    if transcript:
+                        fields["transcript"] = transcript[:95000]
+                        return fields
+                except Exception as exc:
+                    print("Caption unavailable:", video["id"], type(exc).__name__)
+    except Exception as exc:
+        print("Metadata unavailable:", video["id"], type(exc).__name__, str(exc)[:150])
+    return fields
+
 def main():
+    global channel_id_cache
     cid = channel_id()
+    channel_id_cache = cid
     videos = feed(cid)
     print("Channel:", cid, "Feed videos:", len(videos))
     api_videos = uploads_via_api(cid)
@@ -108,19 +160,30 @@ def main():
             print("Recovery lookup unavailable:", exc)
     videos = list(by_id.values())
     if not videos: raise RuntimeError("YouTube feed returned no videos")
-    added = 0
+    added, updated = 0, 0
     for video in reversed(videos):
-        if existing(video["id"]):
-            print("Exists:", video["id"])
-            continue
+        formula = "FIND('" + video["id"] + "', {url}) > 0"
+        matches = json.loads(request(airtable_url({"filterByFormula": formula, "maxRecords": 1}), auth=True)).get("records", [])
+        old = matches[0] if matches else None
         fields = {"title": video["title"], "url": video["url"],
                   "썸네일": "https://i.ytimg.com/vi/" + video["id"] + "/hqdefault.jpg",
-                  **({"업로드일": video["published"]} if video["published"] else {})}
-        result = json.loads(request(airtable_url(), "POST", {"fields": fields}, auth=True))
-        print("Created:", video["id"], result.get("id"))
-        added += 1
+                  **({"업로드일": video["published"]} if video.get("published") else {})}
+        if not old or any(not old.get("fields", {}).get(k) for k in ("설명", "hashtags", "transcript", "privacyStatus")):
+            fields.update(enrich(video))
+        if old:
+            patch = {k: v for k, v in fields.items() if v and not old.get("fields", {}).get(k)}
+            if patch:
+                request(airtable_url() + "/" + old["id"], "PATCH", {"fields": patch}, auth=True)
+                updated += 1
+                print("Filled missing fields:", video["id"], list(patch))
+            else:
+                print("Exists:", video["id"])
+        else:
+            result = json.loads(request(airtable_url(), "POST", {"fields": fields}, auth=True))
+            print("Created:", video["id"], result.get("id"))
+            added += 1
         time.sleep(0.25)
-    print("Done. Added", added, "videos.")
+    print("Done. Added", added, "videos; enriched", updated, "existing records.")
 
 if __name__ == "__main__":
     try: main()
