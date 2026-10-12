@@ -93,6 +93,65 @@ def existing(video_id):
     return bool(data.get("records"))
 
 
+
+def oauth_access_token():
+    client_id = os.getenv("YOUTUBE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("YOUTUBE_CLIENT_SECRET", "").strip()
+    refresh_token = os.getenv("YOUTUBE_REFRESH_TOKEN", "").strip()
+    if not all((client_id, client_secret, refresh_token)):
+        return None
+    body = urllib.parse.urlencode({"client_id": client_id, "client_secret": client_secret,
+                                   "refresh_token": refresh_token, "grant_type": "refresh_token"}).encode()
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)["access_token"]
+
+def youtube_api(endpoint, params, access_token):
+    params = dict(params)
+    url = "https://www.googleapis.com/youtube/v3/" + endpoint + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + access_token})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+def owned_uploads(access_token):
+    data = youtube_api("channels", {"part": "contentDetails", "mine": "true"}, access_token)
+    items = data.get("items", [])
+    if not items or items[0].get("id") != channel_id_cache:
+        raise RuntimeError("OAuth account does not own the expected YouTube channel")
+    playlist = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    videos, token = [], ""
+    while True:
+        args = {"part": "snippet", "playlistId": playlist, "maxResults": 50}
+        if token: args["pageToken"] = token
+        page = youtube_api("playlistItems", args, access_token)
+        for item in page.get("items", []):
+            sn = item.get("snippet", {})
+            vid = sn.get("resourceId", {}).get("videoId")
+            if vid:
+                videos.append({"id": vid, "title": sn.get("title", ""),
+                               "published": sn.get("publishedAt", ""),
+                               "url": "https://www.youtube.com/watch?v=" + vid})
+        token = page.get("nextPageToken", "")
+        if not token: break
+    return videos
+
+def official_metadata(video_id, access_token):
+    data = youtube_api("videos", {"part": "snippet,status", "id": video_id}, access_token)
+    if not data.get("items"): return {}
+    item = data["items"][0]
+    if item.get("snippet", {}).get("channelId") != channel_id_cache: return {}
+    sn = item["snippet"]
+    fields = {}
+    if sn.get("description"): fields["설명"] = sn["description"][:95000]
+    tags = sn.get("tags", [])
+    hashtags = re.findall(r"(?<!\\w)#[\\w가-힣]+", sn.get("description", ""))
+    if tags or hashtags: fields["hashtags"] = ", ".join(dict.fromkeys(hashtags + tags))[:95000]
+    status = item.get("status", {}).get("privacyStatus")
+    if status in ("public", "unlisted", "private"): fields["privacyStatus"] = status
+    if sn.get("publishedAt"): fields["업로드일"] = sn["publishedAt"]
+    return fields
+
 def enrich(video):
     """Best-effort public metadata and captions; never overwrite existing data."""
     fields = {}
@@ -162,6 +221,15 @@ def main():
             if recovered: by_id[recovered["id"]] = recovered
         except Exception as exc:
             print("Recovery lookup unavailable:", exc)
+    try:
+        oauth_token = oauth_access_token()
+        if oauth_token:
+            owned = owned_uploads(oauth_token)
+            print("OAuth uploads:", len(owned))
+            by_id.update({v["id"]: v for v in owned})
+    except Exception as exc:
+        print("OAuth unavailable:", type(exc).__name__, str(exc)[:200])
+        oauth_token = None
     videos = list(by_id.values())
     if not videos: raise RuntimeError("No videos available from RSS or uploads API")
     added, updated = 0, 0
@@ -173,7 +241,12 @@ def main():
                   "썸네일": "https://i.ytimg.com/vi/" + video["id"] + "/hqdefault.jpg",
                   **({"업로드일": video["published"]} if video.get("published") else {})}
         if not old or any(not old.get("fields", {}).get(k) for k in ("설명", "hashtags", "transcript", "privacyStatus")):
-            fields.update(enrich(video))
+            if oauth_token:
+                try: fields.update(official_metadata(video["id"], oauth_token))
+                except Exception as exc: print("Official metadata unavailable:", video["id"], str(exc)[:150])
+            if not fields.get("설명") or not fields.get("transcript"):
+                extra = enrich(video)
+                for k, v in extra.items(): fields.setdefault(k, v)
         if old:
             patch = {k: v for k, v in fields.items() if v and not old.get("fields", {}).get(k)}
             if patch:
