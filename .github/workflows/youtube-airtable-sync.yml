@@ -16,6 +16,9 @@ jobs:
       - name: Sync new videos
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           AIRTABLE_BASE_ID: appGwL6PPsIsZIS9a
           AIRTABLE_TABLE_ID: tbljINNeF0EmAMPJg
           YOUTUBE_HANDLE: bubudiet
