@@ -41,6 +41,9 @@ class SyncTests(unittest.TestCase):
     def test_required_video_validation(self):
         with self.assertRaises(sync.SyncError): sync.sync(required_ids=["abcdefghijk"])
 class ApiTests(unittest.TestCase):
+    def test_recent_mode_stops_after_first_page_without_error(self):
+        yt=sync.YouTube("token"); yt.api=mock.Mock(return_value={"items":[{"contentDetails":{"videoId":"tRNVu1W-IRs"}}],"nextPageToken":"more"})
+        self.assertEqual(yt.upload_ids("UUplaylist",full=False),["tRNVu1W-IRs"]); self.assertEqual(yt.api.call_count,1)
     def test_oauth_failure_is_fatal_and_secret_safe(self):
         env={"YOUTUBE_CLIENT_ID":"id","YOUTUBE_CLIENT_SECRET":"TOP_SECRET","YOUTUBE_REFRESH_TOKEN":"refresh"}
         error=urllib.error.HTTPError("token",400,"bad",{},None)
