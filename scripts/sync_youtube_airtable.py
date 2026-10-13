@@ -74,7 +74,9 @@ class YouTube:
             token = page.get("nextPageToken", "")
             if not token: break
         else:
-            if token: raise SyncError(f"Uploads exceed safety limit ({max_pages * 50})")
+            # Recent mode intentionally stops after the newest page. Only a full
+            # recovery hitting its hard ceiling indicates an incomplete scan.
+            if full and token: raise SyncError(f"Uploads exceed safety limit ({max_pages * 50})")
         return dedupe(ids)
     def metadata(self, ids):
         result = {}
