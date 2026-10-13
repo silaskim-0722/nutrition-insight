@@ -3,17 +3,24 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      full_backfill:
+        description: Scan the complete uploads playlist (manual recovery only)
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: youtube-airtable-sync
+  cancel-in-progress: false
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install metadata extractor
-        run: python3 -m pip install --quiet yt-dlp
-      - name: Sync new videos
+      - name: Sync recent uploads
         env:
           AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
@@ -21,5 +28,12 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           AIRTABLE_BASE_ID: appGwL6PPsIsZIS9a
           AIRTABLE_TABLE_ID: tbljINNeF0EmAMPJg
-          YOUTUBE_HANDLE: bubudiet
-        run: python3 scripts/sync_youtube_airtable.py
+          YOUTUBE_CHANNEL_ID: UCJ1SYnWqyBpnVT41ubFKN7Q
+          REQUIRED_VIDEO_IDS: tRNVu1W-IRs
+        shell: bash
+        run: |
+          args=()
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_backfill }}" == "true" ]]; then
+            args+=(--full-backfill)
+          fi
+          python3 scripts/sync_youtube_airtable.py "${args[@]}"
