@@ -29,7 +29,15 @@ def request_json(url, *, method="GET", headers=None, payload=None, service="API"
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             if exc.code in RETRYABLE and attempt + 1 < retries:
-                time.sleep(min(2 ** attempt, 8)); continue
+                wait = min(2 ** attempt, 8)
+                if exc.code == 429:
+                    # Airtable 속도 제한: 서버가 알려준 대기 시간 우선, 없으면 길게 대기
+                    try:
+                        wait = max(wait, min(int(exc.headers.get("Retry-After", 0)), 60))
+                    except ValueError:
+                        pass
+                    wait = max(wait, 10)
+                time.sleep(wait); continue
             raise SyncError(f"{service} request failed with HTTP {exc.code}") from None
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt + 1 < retries:
@@ -102,12 +110,15 @@ class Airtable:
                 if match: result.setdefault(match.group(1), record)
             offset = page.get("offset", "")
             if not offset: return result
+            # Airtable 초당 5건 제한 회피: 페이지 사이 간격 두기
+            time.sleep(0.25)
     def write_batches(self, creates, updates):
         for method, records in (("POST", [{"fields": x} for x in creates]),
                                 ("PATCH", [{"id": rid, "fields": x} for rid, x in updates])):
             for start in range(0, len(records), 10):
                 request_json(self.url, method=method, headers=self.headers,
                     payload={"records": records[start:start+10], "typecast": False}, service="Airtable API")
+                time.sleep(0.25)
 
 def dedupe(ids):
     return list(dict.fromkeys(x for x in ids if re.fullmatch(r"[A-Za-z0-9_-]{11}", x)))
